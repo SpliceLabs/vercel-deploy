@@ -1,10 +1,21 @@
-name: Deploy
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch: {}   # lets you redeploy manually from the Actions tab
-
-jobs:
-  deploy:
-    uses: SpliceLabs/vercel-deploy/.github/workflows/deploy.yml@v1
+- name: Trigger Vercel Deploy Hook
+env:
+  HOOKS: ${{ secrets.VERCEL_HOOKS }}
+  REPO: ${{ github.event.repository.name }}
+run: |
+  if [ -z "$HOOKS" ]; then
+    echo "::error::VERCEL_HOOKS is empty here. It's missing, not an org secret, or not shared with '$REPO'."
+    exit 1
+  fi
+  if ! echo "$HOOKS" | jq -e . >/dev/null 2>&1; then
+    echo "::error::VERCEL_HOOKS is not valid JSON."
+    exit 1
+  fi
+  echo "Keys in VERCEL_HOOKS: $(echo "$HOOKS" | jq -r 'keys | join(", ")')"
+  HOOK_URL=$(echo "$HOOKS" | jq -r --arg r "$REPO" '.[$r] // empty')
+  if [ -z "$HOOK_URL" ]; then
+    echo "::error::No hook for '$REPO' in VERCEL_HOOKS"
+    exit 1
+  fi
+  curl -fsS -X POST "$HOOK_URL"
+  echo "Triggered Vercel deploy for $REPO"
