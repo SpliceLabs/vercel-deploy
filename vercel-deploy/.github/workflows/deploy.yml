@@ -1,20 +1,6 @@
 name: Vercel Deploy Hook
-
-# Reusable workflow for SpliceLabs repos.
-# Callers pass a project key (e.g. FRONTEND) and this workflow
-# triggers the matching org secret VERCEL_HOOK_<KEY>.
-
 on:
-  workflow_call:
-    inputs:
-      project:
-        description: "Project key, e.g. FRONTEND -> uses org secret VERCEL_HOOK_FRONTEND"
-        required: true
-        type: string
-
-concurrency:
-  group: vercel-deploy-${{ inputs.project }}
-  cancel-in-progress: true
+  workflow_call: {}
 
 jobs:
   deploy:
@@ -22,12 +8,13 @@ jobs:
     steps:
       - name: Trigger Vercel Deploy Hook
         env:
-          HOOK_URL: ${{ secrets[format('VERCEL_HOOK_{0}', inputs.project)] }}
-          PROJECT: ${{ inputs.project }}
+          HOOKS: ${{ secrets.VERCEL_HOOKS }}
+          REPO: ${{ github.event.repository.name }}
         run: |
+          HOOK_URL=$(echo "$HOOKS" | jq -r --arg r "$REPO" '.[$r] // empty')
           if [ -z "$HOOK_URL" ]; then
-            echo "::error::Org secret VERCEL_HOOK_${PROJECT} not found or not shared with this repo"
+            echo "::error::No hook for '$REPO' in VERCEL_HOOKS"
             exit 1
           fi
           curl -fsS -X POST "$HOOK_URL"
-          echo "Triggered Vercel deploy for ${PROJECT} (commit ${GITHUB_SHA::7} by ${GITHUB_ACTOR})"
+          echo "Triggered Vercel deploy for $REPO"
