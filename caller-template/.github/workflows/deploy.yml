@@ -1,0 +1,13 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # lets you redeploy manually from the Actions tab
+
+jobs:
+  deploy:
+    uses: SpliceLabs/vercel-deploy/.github/workflows/deploy.yml@v1
+    with:
+      project: CHANGE_ME   # e.g. FRONTEND, ADMIN, DOCS — must match org secret VERCEL_HOOK_<KEY>
+    secrets: inherit
