@@ -1,6 +1,6 @@
 # SpliceLabs / vercel-deploy
 
-Central, reusable GitHub Actions workflow that triggers Vercel deploys for SpliceLabs repos.
+Central, reusable GitHub Actions workflows that deploy SpliceLabs repos to Vercel: `deploy.yml` triggers Vercel deploy hooks, and `deploy-prebuilt.yml` builds in Actions and uploads the result (see [Alternative workflow](#alternative-workflow-build-in-actions-deploy-prebuiltyml)).
 
 This file is written to be followed step by step by a person **or an AI agent**. Every step names the exact place, the exact value, and how to check it worked.
 
@@ -148,6 +148,60 @@ Match the exact message from the run log.
 | `Invalid input, project is not defined` | The caller still has an old `with: project:` block. | Remove the `with:` block (Step 5). |
 | Two Vercel deployments per commit | `vercel.json` is missing or wrong. | Redo Step 4. |
 | Notice about `ubuntu-latest` migrating to Ubuntu 26 | Informational only. | Ignore it. |
+
+---
+
+## Alternative workflow: build in Actions (`deploy-prebuilt.yml`)
+
+A second reusable workflow sits next to the hook one. Existing callers of `deploy.yml` are not affected. Pick one per repo.
+
+| | `deploy.yml` (hooks) | `deploy-prebuilt.yml` |
+|---|---|---|
+| Who builds | Vercel, using Vercel build minutes | GitHub Actions (`vercel build`); Vercel only hosts |
+| Vercel Git connection | Required | Not needed |
+| Secret | `VERCEL_HOOKS` (one URL per repo) | `VERCEL_TOKEN` (one token for every repo) |
+| Previews | `main` only | `target: preview` gives a preview URL from any branch |
+| Smoke check | No | Optional (`smoke-marker`) |
+
+**Vercel seats:** the token comes from one Vercel account with a seat on the team (Pro includes one). Every deploy runs as that account, so commit authors don't need seats. Teammates who only look at the dashboard can be free Viewer members.
+
+### Adding a repo
+
+1. **Token (once per team):** signed in as the seat account, open Vercel → **Account Settings → Tokens**, create a token scoped to the Splice Labs team, and store it in the team password manager.
+2. **Secret:** add `VERCEL_TOKEN` as a GitHub secret. Public repos can use an org secret. Private repos need a repository or environment secret (same rule as Step 3B). Environment secrets work because the deploy job runs in the GitHub environment named by `environment` (default: the `target`, e.g. `production`).
+3. **IDs:** add the variables `VERCEL_ORG_ID` (the team ID, `team_...`) and `VERCEL_PROJECT_ID` (`prj_...`, Vercel → project → Settings → General). Set them on the repo or on the environment, or pass `vercel-org-id` / `vercel-project-id` as inputs. They aren't secret.
+4. **`vercel.json`:** same as Step 4 (`"git": {"deploymentEnabled": false}`).
+5. **Caller:** copy `caller-template/.github/workflows/deploy-prebuilt.yml` to `.github/workflows/deploy.yml` in the repo. Replace the hook caller if there is one.
+6. **Verify:** merge to `main`, open the **Deploy** run, and check that the step summary shows `Deployed production: https://...`.
+
+### Inputs
+
+| Input | Default | Meaning |
+|---|---|---|
+| `target` | `production` | `production` or `preview` |
+| `environment` | the target | GitHub environment for the job (its secrets, variables and protection rules apply) |
+| `ref` | triggering commit | Commit to deploy, e.g. a `workflow_run` head SHA |
+| `node-version-file` | `.nvmrc` | Passed to `actions/setup-node` |
+| `vercel-cli` | `vercel@62.4.0` | Pinned CLI package |
+| `vercel-org-id`, `vercel-project-id` | `vars.VERCEL_ORG_ID`, `vars.VERCEL_PROJECT_ID` | Vercel IDs |
+| `required-env` | empty | Space-separated Vercel env vars that must be non-empty before building |
+| `smoke-marker` | empty | Text the deployed page must contain. Protected previews also need the `VERCEL_AUTOMATION_BYPASS_SECRET` secret |
+
+The workflow outputs `url`, the deployment URL.
+
+### Gating on CI
+
+To deploy only after CI passes, call it from a workflow triggered by `workflow_run` on the CI workflow, and pass `ref: ${{ github.event.workflow_run.head_sha }}`. SpliceLabs/splice-crm's `deploy-web.yml` is a worked example with a preview smoke check before production.
+
+### Troubleshooting
+
+| What you see | Fix |
+|---|---|
+| `Missing VERCEL_TOKEN` | Add the secret (step 2). The caller needs `secrets: inherit`. A private repo can't see org secrets on our plan. |
+| `Missing VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` | Add the variables or pass the inputs (step 3). |
+| `Error: The specified token is not valid` | The token expired or was revoked. Create a new one (step 1). |
+| `Missing or empty <NAME> in the Vercel production environment` | Set that env var in Vercel → project → Settings → Environment Variables. |
+| `does not contain the smoke marker` | The page didn't render as expected, or Vercel Authentication blocked it. Set `VERCEL_AUTOMATION_BYPASS_SECRET` for protected previews. |
 
 ---
 

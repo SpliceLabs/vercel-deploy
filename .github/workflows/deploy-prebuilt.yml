@@ -1,0 +1,143 @@
+name: Vercel Prebuilt Deploy
+
+# Builds the calling repo in GitHub Actions and uploads the finished output to
+# Vercel (`vercel build` + `vercel deploy --prebuilt`). Vercel only hosts: it runs
+# no build and needs no Git connection, so no deploy hooks and no per-author seats.
+# One token (VERCEL_TOKEN, from the seat that owns the project) does every deploy.
+# The Vercel CLI reads VERCEL_TOKEN from the environment, so it never reaches argv.
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: "production or preview"
+        type: string
+        default: production
+      environment:
+        description: "GitHub environment for the deploy job (its secrets and variables apply). Defaults to the target."
+        type: string
+        default: ""
+      ref:
+        description: "Commit to deploy. Defaults to the commit that triggered the caller."
+        type: string
+        default: ""
+      node-version-file:
+        type: string
+        default: .nvmrc
+      vercel-cli:
+        description: "Pinned Vercel CLI package"
+        type: string
+        default: vercel@62.4.0
+      vercel-org-id:
+        description: "Vercel team ID. Defaults to the VERCEL_ORG_ID variable."
+        type: string
+        default: ""
+      vercel-project-id:
+        description: "Vercel project ID. Defaults to the VERCEL_PROJECT_ID variable."
+        type: string
+        default: ""
+      required-env:
+        description: "Space-separated Vercel environment variables that must be non-empty before building"
+        type: string
+        default: ""
+      smoke-marker:
+        description: "Text the deployed page must contain. Empty skips the smoke check."
+        type: string
+        default: ""
+    secrets:
+      VERCEL_TOKEN:
+        required: false
+      VERCEL_AUTOMATION_BYPASS_SECRET:
+        required: false
+    outputs:
+      url:
+        description: "The deployment URL"
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment || inputs.target }}
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ inputs.vercel-org-id || vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ inputs.vercel-project-id || vars.VERCEL_PROJECT_ID }}
+      VERCEL_CLI: ${{ inputs.vercel-cli }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - name: Check inputs and credentials
+        run: |
+          case "$TARGET" in
+            production|preview) ;;
+            *) echo "::error::target must be production or preview (got '$TARGET')"; exit 1 ;;
+          esac
+          missing=()
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing ${missing[*]}. VERCEL_TOKEN is a secret (pass it with 'secrets: inherit'); the IDs are variables or inputs."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+      - name: Pull Vercel settings and environment
+        run: npx --yes "$VERCEL_CLI" pull --yes --environment="$TARGET"
+      - name: Require Vercel environment variables
+        if: inputs.required-env != ''
+        env:
+          REQUIRED: ${{ inputs.required-env }}
+        run: |
+          env_file=".vercel/.env.$TARGET.local"
+          for name in $REQUIRED; do
+            if ! grep -Eq "^$name=\"[^\"]+\"" "$env_file"; then
+              echo "::error::Missing or empty $name in the Vercel $TARGET environment"
+              exit 1
+            fi
+          done
+      - name: Build in Actions
+        run: |
+          if [ "$TARGET" = production ]; then
+            npx --yes "$VERCEL_CLI" build --prod
+          else
+            npx --yes "$VERCEL_CLI" build
+          fi
+      - name: Upload the prebuilt output
+        id: deploy
+        run: |
+          if [ "$TARGET" = production ]; then
+            url="$(timeout 15m npx --yes "$VERCEL_CLI" deploy --prebuilt --prod)"
+          else
+            url="$(timeout 15m npx --yes "$VERCEL_CLI" deploy --prebuilt)"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed $TARGET: $url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke check
+        if: inputs.smoke-marker != ''
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          MARKER: ${{ inputs.smoke-marker }}
+          BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          # The bypass header goes through curl's config on stdin, so the secret
+          # never reaches argv. No --location: a redirect (e.g. to a login page)
+          # fails the check instead of carrying the secret to another host.
+          if [ -n "$BYPASS_SECRET" ]; then
+            body="$(printf 'header = "x-vercel-protection-bypass: %s"\n' "$BYPASS_SECRET" \
+              | curl --fail --silent --show-error -K - "$URL")"
+          else
+            body="$(curl --fail --silent --show-error "$URL")"
+          fi
+          if ! grep -qF "$MARKER" <<< "$body"; then
+            echo "::error::$URL does not contain the smoke marker"
+            exit 1
+          fi
