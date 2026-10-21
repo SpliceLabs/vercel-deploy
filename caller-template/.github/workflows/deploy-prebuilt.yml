@@ -1,0 +1,16 @@
+name: Deploy
+
+# Alternative to deploy.yml: builds in GitHub Actions and uploads to Vercel.
+# Use one of the two in a repo, not both.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allows manual redeploys from the Actions tab
+
+jobs:
+  deploy:
+    uses: SpliceLabs/vercel-deploy/.github/workflows/deploy-prebuilt.yml@v1
+    secrets: inherit
+    with:
+      target: production
+      # smoke-marker: <div id="root">   # optional: text the live page must contain
